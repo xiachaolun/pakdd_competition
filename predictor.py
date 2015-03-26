@@ -81,11 +81,13 @@ class GenderPredictor(object):
         for i in xrange(len(C_list)):
             self.C_index[C_list[i]] = i
 
-    def setParameters(self, standardize=True, min_rule_acc=0.95, female_ratio=1.0, n_product_least=2):
+    def setParameters(self, standardize=True, min_rule_acc=[0.1, 0.95], female_ratio=1.0, n_product_least=1):
         self.standardize = standardize
         self.min_rule_acc = min_rule_acc
         self.female_ratio = female_ratio
         self.n_product_least = n_product_least
+        self.feature_selection = True
+        self.selected_feature_idx = None
 
     def _loadRules(self):
         self.rules = {}
@@ -94,12 +96,12 @@ class GenderPredictor(object):
                 d = line.split()
                 name = d[0]
                 conf = int(d[1])
-                acc = max(float(d[2]), 1 - float(d[2]))
+                acc = float(d[2])
                 if float(d[2]) > 0.5:
                     label = 0
                 else:
                     label = 1
-                if acc >= self.n_product_least and conf >= 10:
+                if (acc >= max(self.min_rule_acc) or acc <= min(self.min_rule_acc)) and conf >= 10:
                     self.rules[name] = label
 
     def _judgeByRules(self, x):
@@ -114,7 +116,7 @@ class GenderPredictor(object):
         return -1
 
 
-    def extractFeatures(self, x):
+    def extractFeatures(self, x, feature_idx=None):
         # start hour
         st_time = datetime.strptime(x['start_date'], '%Y-%m-%d %H:%M:%S')
         time_feature = [0 for i in xrange(24)]
@@ -137,11 +139,18 @@ class GenderPredictor(object):
                 C_index = self.C_index[product[2]]
                 C_feature[C_index] += 1.0 / total_view
 
-        return time_feature + A_feature + B_feature + C_feature
+        raw_feature = time_feature + A_feature + B_feature + C_feature
+        if feature_idx is None:
+            return raw_feature
 
-    def trainModel(self, model):
+        selected_feature = []
+        for id in feature_idx:
+            selected_feature.append(raw_feature[id])
+        return selected_feature
+
+    def trainModel(self, model, retrain=False):
         if model == 'GBDT':
-            self.predictor = GradientBoostingRegressor(n_estimators=200, max_depth=4, subsample=0.8)
+            self.predictor = GradientBoostingRegressor(n_estimators=100, max_depth=3, subsample=0.8)
         elif model == 'RF':
             self.predictor = RandomForestClassifier()
         elif model == 'LR':
@@ -163,9 +172,20 @@ class GenderPredictor(object):
             features.append(self.extractFeatures(d))
             labels.append(d['gender'])
 
-        X = np.array([[0.1, 0.5, 0],
-              [0.3, -0.4, 4],
-              [-0.3, 2, 1]])
+        if self.feature_selection:
+            selector = GradientBoostingRegressor(n_estimators=100, max_depth=3, subsample=0.8)
+            selector.fit(features, labels)
+            self.selected_feature_idx = []
+            for i in xrange(len(selector.feature_importances_)):
+                if selector.feature_importances_[i] > 0.000001:
+                    self.selected_feature_idx.append(i)
+            print len(self.selected_feature_idx)
+
+            features = []
+            labels = []
+            for d in self.training_data:
+                features.append(self.extractFeatures(d, self.selected_feature_idx))
+                labels.append(d['gender'])
 
         features = np.array(features)
 
@@ -174,9 +194,41 @@ class GenderPredictor(object):
             features = self._scaler.fit_transform(features)
 
         self.predictor.fit(features, labels)
+        # print len(features[0])
 
-    def predict(self, d, use_rule=True, true_label=None):
-        feature = self.extractFeatures(d)
+        # if retrain:
+        #     selected_male = []
+        #     selected_female = []
+        #     for i in xrange(len(labels)):
+        #         feature = features[i]
+        #         true_y = labels[i]
+        #         predict_y = self.predictor.predict(feature)
+        #         if true_y == 1:
+        #             selected_male.append((true_y - predict_y, true_y, feature))
+        #         else:
+        #             selected_female.append((predict_y, true_y, feature))
+        #
+        #     selected_male = sorted(selected_male, key=lambda x: x[0])
+        #     selected_female = sorted(selected_female, key=lambda x: x[0])
+        #
+        #     n_discard_male = min(200, int(len(selected_male) * 0.9))
+        #     n_discard_female = min(200, int(len(selected_female) * 0.9))
+        #
+        #     print 'After re-selection, %d female and %d male' % (len(selected_male) - n_discard_male, len(selected_female) - n_discard_female)
+        #     features = []
+        #     labels = []
+        #     for d in selected_male[0: len(selected_male) - n_discard_male] + selected_female[0: len(selected_female) - n_discard_female]:
+        #         labels.append(d[1])
+        #         features.append(d[2])
+        #
+        #     self.predictor.fit(features, labels)
+
+
+
+
+    def predict(self, d, use_rule=True):
+        feature = self.extractFeatures(d, self.selected_feature_idx)
+        # print len(feature)
         if self.standardize:
             feature = self._scaler.transform(feature)
         predicted_y_by_classifier = int(self.predictor.predict(feature) + 0.5)
@@ -200,9 +252,17 @@ class GenderPredictor(object):
         total_female = 0
         correct_predicted_female = 0
 
+        predicted_as_male = 0
+        predicted_as_female = 0
+
         for d in test_data:
             true_label = d['gender']
-            final_predicted_label = self.predict(d, true_label=true_label)
+            final_predicted_label = self.predict(d)
+
+            if final_predicted_label == 1:
+                predicted_as_male += 1
+            else:
+                predicted_as_female += 1
 
             if true_label == 0:
                 total_female += 1
@@ -222,9 +282,10 @@ class GenderPredictor(object):
         acc_male = correct_predicted_male * 1.0 / total_male
         acc_female = correct_predicted_female * 1.0 / total_female
         print acc_male, acc_female, (acc_female + acc_male) / 2
+        print predicted_as_male, total_male, predicted_as_female, total_female
         return (acc_female + acc_male) / 2
 
-    def splitTrainingAndEvaluationData(self, training_proportion=0.9):
+    def splitTrainingAndEvaluationData(self, training_proportion=1.0):
         random.shuffle(self.test_data)
 
         n_training = int(0.5 + len(self.test_data) * training_proportion)
@@ -241,7 +302,7 @@ class GenderPredictor(object):
                 male_data.append(d)
         random.shuffle(female_data)
         female_data = female_data[0:int(0.5 + self.female_ratio * len(male_data))]
-        print 'After downsample female data, there are %d females and %d males' % (len(female_data), len(male_data))
+        # print 'After downsample female data, there are %d females and %d males' % (len(female_data), len(male_data))
 
         self.training_data = female_data + male_data
 
@@ -271,7 +332,7 @@ def outputTestData():
 
     gp = GenderPredictor()
     gp.splitTrainingAndEvaluationData(1.0)
-    gp.setParameters()
+    gp.setParameters(min_rule_acc=[0.1, 0.95], female_ratio=1)
     gp._loadRules()
 
     gp.trainingDataSelection()
@@ -295,16 +356,16 @@ def tune():
     best_paras = []
 
     # min_rule_acc=0.95, female_ratio=1.0, n_product_least
-    for min_rule_acc in [0.9, 0.95, 1.0]:
-        for female_ratio in [0.8, 0.9, 1.0, 1.1, 1.2]:
-            for n_product_least in [1, 2, 3]:
+    for min_rule_acc in [[0.3, 0.9], [0.2, 0.95], [0.1, 0.95]]:
+        for female_ratio in [0.9, 1.0, 1.1]:
+            for n_product_least in [1, 2]:
                 gp.setParameters(min_rule_acc=min_rule_acc,
                                  female_ratio=female_ratio,
                                  n_product_least=n_product_least)
                 gp._loadRules()
                 gp.trainingDataSelection()
                 gp.downsampleTrainingData()
-                classifiers = ['LR', 'SVM', 'GBDT', 'NB']
+                classifiers = ['LR', 'GBDT']
                 for model in classifiers:
                     # print model, min_rule_acc, female_ratio, n_product_least
 
@@ -314,12 +375,29 @@ def tune():
                         best_acc = acc
                         best_paras = [model, min_rule_acc, female_ratio, n_product_least]
 
-        print best_acc, best_paras
+    print best_acc, best_paras
+
+
+def singleTune():
+    gp = GenderPredictor()
+    gp.splitTrainingAndEvaluationData(training_proportion=0.8)
+
+    gp.setParameters()
+    gp._loadRules()
+    gp.trainingDataSelection()
+    gp.downsampleTrainingData()
+    classifiers = ['LR']
+    for model in classifiers:
+        # print model, min_rule_acc, female_ratio, n_product_least
+
+        gp.trainModel(model)
+        gp.testByClassifier(gp.evaluation_data)
 
 # {'male': 3297, 'female': 11703}
 if __name__ == '__main__':
     # outputTestData()
-    for i in xrange(100):
-        tune()
+    # for i in xrange(100):
+    #     tune()
+    singleTune()
 
 
