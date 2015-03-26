@@ -33,17 +33,22 @@ from sklearn.neighbors import KNeighborsClassifier
 #
 # print scaler.transform(x_test)
 
-import matplotlib.pyplot as plt
+# import matplotlib.pyplot as plt
+#
+# import networkx as nx
+#
+# G=nx.Graph()
+#
+# G.add_node(1)
+# G.add_node(2)
+#
+# G.add_edge(1, 2, weight=1.0)
+#
+# print G.has_edge(1, 2)
+# G[1][2]['weight'] = G[1][2]['weight'] + 2
+# print G[2][1]
 
-import networkx as nx
+from multiprocessing.pool import ThreadPool
 
-G=nx.Graph()
 
-G.add_node(1)
-G.add_node(2)
 
-G.add_edge(1, 2, weight=1.0)
-
-print G.has_edge(1, 2)
-G[1][2]['weight'] = G[1][2]['weight'] + 2
-print G[2][1]

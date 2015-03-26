@@ -6,6 +6,8 @@ import numpy as np
 import copy, math, os, sys
 import calendar, datetime
 
+import threading
+
 from pprint import pprint
 
 from scipy.spatial import distance
@@ -240,16 +242,16 @@ def preprocess(level=3, n_step=2):
             W[j][k] /= normalization_factors[k]
 
     # pprint(W)
-    pool = ThreadPool(processes=30)
+    # pool = ThreadPool(processes=30)
 
     # st = getCurrentStampUTC()
     for start_node in xrange(N):
         # print transfer_to[start_node]
-        pool.apply_async(offlineRandomWalk, [N, start_node, W, transfer_to])
-        # offlineRandomWalk(N, start_node, W, transfer_to)
+        # pool.apply_async(offlineRandomWalk, [N, start_node, W, transfer_to])
+        offlineRandomWalk(N, start_node, W, transfer_to)
         # print start_node
-    pool.close()
-    pool.join()
+    # pool.close()
+    # pool.join()
 
     # nx.draw(G)
     # plt.savefig("test.png")
