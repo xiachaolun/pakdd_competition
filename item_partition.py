@@ -4,10 +4,19 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 import copy, math, os, sys
+import calendar, datetime
 
 from pprint import pprint
 
 from scipy.spatial import distance
+
+from multiprocessing.pool import ThreadPool
+
+from utility.mongodb_interface import MongoDBInterface
+
+def getCurrentStampUTC():
+    cur_utc_timestamp = calendar.timegm(datetime.datetime.utcnow().utctimetuple())
+    return int(cur_utc_timestamp)
 
 def _loadData(file):
     products_seq = []
@@ -120,11 +129,24 @@ def _connectedAnalysis(level=3):
     for cc in nx.connected_components(G):
         print len(cc)
 
+def offlineRandomWalk(N, start_node, W, transfer_to):
+    c = 0.05
+    res = randomWalkWithRestart(N, start_node, W, transfer_to, c)
+    sparse = []
+    for i in xrange(N):
+        if res[i] > 1e-10:
+            sparse.append((i, res[i]))
+
+    mi = MongoDBInterface()
+    mi.setDB('pakdd_comp')
+    mi.setCollection('D_affinity_matrix')
+    mi.saveDocument({'node_id': start_node, 'affinity_vector_sparse': sparse})
+
 def randomWalkWithRestart(N, start_node, W, transfer_to, c=0.05):
     v = np.zeros(N)
     v[start_node] = 1.0
 
-    k = 10
+    k = 20
     while k > 0:
         updated_v = np.zeros(N)
         for j in xrange(N):
@@ -146,6 +168,34 @@ def randomWalkWithRestart(N, start_node, W, transfer_to, c=0.05):
     return v
 
 
+def randomWalkWithRestartSparse(N, start_node, W, transfer_to, c=0.05):
+    v = {start_node: 1.0}
+
+    k = 20
+    while k > 0:
+        updated_v = {}
+        if c > 0:
+            updated_v[start_node] = c
+        for j in v.keys():
+            for i in transfer_to[j]:
+                assert W[i][j] > 0 and W[i][j] <= 1
+                updated_v[i] = updated_v.get(i, 0) + W[i][j] * v[j] * (1-c)
+
+        key_set = set()
+        for k in v.keys() + updated_v.keys():
+            key_set.add(k)
+        l2_dis = 0
+        for key in key_set:
+            l2_dis += (v.get(key, 0) - updated_v.get(key, 0))**2
+        l2_dis = math.sqrt(l2_dis)
+        tot = sum([v for k, v in updated_v.items()])
+        v = copy.deepcopy(updated_v)
+        assert math.fabs(tot - c) < 1e-6 or math.fabs(tot - 1) < 1e-6
+        k -= 1
+
+        if l2_dis < 1e-4:
+            break
+    return v
 
 def preprocess(level=3, n_step=2):
     # users never view any product more than once
@@ -190,10 +240,16 @@ def preprocess(level=3, n_step=2):
             W[j][k] /= normalization_factors[k]
 
     # pprint(W)
+    pool = ThreadPool(processes=30)
+
+    # st = getCurrentStampUTC()
     for start_node in xrange(N):
         # print transfer_to[start_node]
-        print randomWalkWithRestart(N, start_node, W, transfer_to)
-        print start_node
+        pool.apply_async(offlineRandomWalk, [N, start_node, W, transfer_to])
+        # offlineRandomWalk(N, start_node, W, transfer_to)
+        # print start_node
+    pool.close()
+    pool.join()
 
     # nx.draw(G)
     # plt.savefig("test.png")
