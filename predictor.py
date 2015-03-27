@@ -20,6 +20,8 @@ from sklearn.neighbors import KNeighborsClassifier
 
 from sklearn.preprocessing import StandardScaler
 
+from product_analysis import findCommonFeatures
+
 class GenderPredictor(object):
 
     def __init__(self):
@@ -56,37 +58,15 @@ class GenderPredictor(object):
                      'products': products}
                 self.test_data.append(x)
 
-        self.A_index = {}
-        self.B_index = {}
-        self.C_index = {}
+        self.A_set, self.A_index = findCommonFeatures(0)
+        self.B_set, self.B_index = findCommonFeatures(1)
+        self.C_set, self.C_index = findCommonFeatures(2)
 
-        A_set = set()
-        B_set = set()
-        C_set = set()
-        for x in self.test_data:
-            for product in x['products']:
-                A_set.add(product[0])
-                B_set.add(product[1])
-                C_set.add(product[2])
-
-        A_list = sorted(list(A_set))
-        for i in xrange(len(A_list)):
-            self.A_index[A_list[i]] = i
-
-        B_list = sorted(list(B_set))
-        for i in xrange(len(B_list)):
-            self.B_index[B_list[i]] = i
-
-        C_list = sorted(list(C_set))
-        for i in xrange(len(C_list)):
-            self.C_index[C_list[i]] = i
-
-    def setParameters(self, standardize=True, min_rule_acc=[0.1, 0.95], female_ratio=1.0, n_product_least=1):
-        self.standardize = standardize
+    def setParameters(self, min_rule_acc=[0.1, 0.95], female_ratio=1.0, n_product_least=1):
         self.min_rule_acc = min_rule_acc
         self.female_ratio = female_ratio
         self.n_product_least = n_product_least
-        self.feature_selection = True
+        self.feature_selection = False
         self.selected_feature_idx = None
 
     def _loadRules(self):
@@ -125,21 +105,26 @@ class GenderPredictor(object):
         # total_count of viewed products is not useful
         total_view = len(x['products'])
         A_feature = [0 for i in xrange(len(self.A_index))]
-        B_feature = [0 for i in xrange(len(self.B_index))]
-        C_feature = [0 for i in xrange(len(self.C_index))]
+        B_feature = [0 for i in xrange(1 + len(self.B_index))]
+        C_feature = [0 for i in xrange(1 + len(self.C_index))]
         for product in x['products']:
             A_index = self.A_index[product[0]]
             A_feature[A_index] += 1.0 / total_view
 
-            if product[1] in self.B_index.keys():
+            if product[1] in self.B_set:
                 B_index = self.B_index[product[1]]
-                B_feature[B_index] += 1.0 / total_view
+            else:
+                B_index = len(B_feature) - 1
+            B_feature[B_index] += 1.0 / total_view
 
-            if product[2] in self.C_index.keys():
+
+            if product[2] in self.C_set:
                 C_index = self.C_index[product[2]]
-                C_feature[C_index] += 1.0 / total_view
+            else:
+                C_index = len(C_feature) - 1
+            C_feature[C_index] += 1.0 / total_view
 
-        raw_feature = time_feature + A_feature + B_feature + C_feature
+        raw_feature = time_feature + A_feature + B_feature + C_feature + [total_view]
         if feature_idx is None:
             return raw_feature
 
@@ -172,22 +157,27 @@ class GenderPredictor(object):
             features.append(self.extractFeatures(d))
             labels.append(d['gender'])
 
-        if self.feature_selection:
-            selector = GradientBoostingRegressor(n_estimators=100, max_depth=3, subsample=0.8)
-            selector.fit(features, labels)
-            self.selected_feature_idx = []
-            for i in xrange(len(selector.feature_importances_)):
-                if selector.feature_importances_[i] > 0.000001:
-                    self.selected_feature_idx.append(i)
-            print len(self.selected_feature_idx)
-
-            features = []
-            labels = []
-            for d in self.training_data:
-                features.append(self.extractFeatures(d, self.selected_feature_idx))
-                labels.append(d['gender'])
+        # if self.feature_selection:
+        #     selector = GradientBoostingRegressor(n_estimators=100, max_depth=3, subsample=0.8)
+        #     selector.fit(features, labels)
+        #     self.selected_feature_idx = []
+        #     for i in xrange(len(selector.feature_importances_)):
+        #         if selector.feature_importances_[i] > 0.000001:
+        #             self.selected_feature_idx.append(i)
+        #     print len(self.selected_feature_idx)
+        #
+        #     features = []
+        #     labels = []
+        #     for d in self.training_data:
+        #         features.append(self.extractFeatures(d, self.selected_feature_idx))
+        #         labels.append(d['gender'])
 
         features = np.array(features)
+
+        if model == 'LR':
+            self.standardize = True
+        else:
+            self.standardize = False
 
         if self.standardize:
             self._scaler = StandardScaler()
@@ -222,8 +212,6 @@ class GenderPredictor(object):
         #         features.append(d[2])
         #
         #     self.predictor.fit(features, labels)
-
-
 
 
     def predict(self, d, use_rule=True):
@@ -314,7 +302,6 @@ class GenderPredictor(object):
                 self.training_data.append(copy.deepcopy(d))
 
 def outputTestData():
-
     test_data = []
     with open('data/testData.csv') as f:
         for line in f.readlines():
@@ -337,7 +324,7 @@ def outputTestData():
 
     gp.trainingDataSelection()
     gp.downsampleTrainingData()
-    gp.trainModel('LR')
+    gp.trainModel('GBDT')
 
     with open('testLabels.txt', 'w') as f:
         for d in test_data:
@@ -382,7 +369,7 @@ def singleTune():
     gp = GenderPredictor()
     gp.splitTrainingAndEvaluationData(training_proportion=0.8)
 
-    gp.setParameters()
+    gp.setParameters(min_rule_acc=[0.1, 0.95])
     gp._loadRules()
     gp.trainingDataSelection()
     gp.downsampleTrainingData()
@@ -392,6 +379,8 @@ def singleTune():
 
         gp.trainModel(model)
         gp.testByClassifier(gp.evaluation_data)
+        # if model == 'LR':
+        #     print gp.predictor.coef_
 
 # {'male': 3297, 'female': 11703}
 if __name__ == '__main__':

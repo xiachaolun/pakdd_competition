@@ -16,6 +16,10 @@ from multiprocessing.pool import ThreadPool
 
 from utility.mongodb_interface import MongoDBInterface
 
+import time
+
+from kmedoid import affinityToDistance, plitCluster, Cluster
+
 def getCurrentStampUTC():
     cur_utc_timestamp = calendar.timegm(datetime.datetime.utcnow().utctimetuple())
     return int(cur_utc_timestamp)
@@ -133,22 +137,52 @@ def _connectedAnalysis(level=3):
 
 def offlineRandomWalk(N, start_node, W, transfer_to):
     c = 0.05
-    res = randomWalkWithRestart(N, start_node, W, transfer_to, c)
-    sparse = []
-    for i in xrange(N):
-        if res[i] > 1e-10:
-            sparse.append((i, res[i]))
+    # res = randomWalkWithRestart(N, start_node, W, transfer_to, c)
+    # sparse = []
+    # for i in xrange(N):
+    #     if res[i] > 1e-10:
+    #         sparse.append((i, res[i]))
+    # import time
+    # time.sleep(1)
 
-    mi = MongoDBInterface()
-    mi.setDB('pakdd_comp')
-    mi.setCollection('D_affinity_matrix')
-    mi.saveDocument({'node_id': start_node, 'affinity_vector_sparse': sparse})
+    v = np.zeros(10000)
+    # v[start_node] = 1.0
+    # time.sleep(1)
+    k = 2000
+    while k > 0:
+        updated_v = np.zeros(10000)
+        # for j in xrange(N):
+        #     if v[j] == 0:
+        #         continue
+            # for i in transfer_to[j]:
+            #     assert W[i][j] > 0 and W[i][j] <= 1
+            #     updated_v[i] += W[i][j] * v[j] * (1-c)
+
+        # updated_v[start_node] += c
+        l2_dis = distance.euclidean(v, updated_v)
+        v = copy.deepcopy(updated_v)
+        tot = sum(v)
+        assert math.fabs(tot - c) < 1e-6 or math.fabs(tot - 1) < 1e-6
+        k -= 1
+
+        if l2_dis < 1e-4:
+            break
+    # sleep(N, start_node, W, transfer_to, c=0.05)
+    # print sparse
+    # mi = MongoDBInterface()
+    # mi.setDB('pakdd_comp')
+    # mi.setCollection('D_affinity_matrix')
+    # mi.saveDocument({'node_id': start_node, 'affinity_vector_sparse': sparse})
+
+def sleep():
+    import time
+    time.sleep(1)
 
 def randomWalkWithRestart(N, start_node, W, transfer_to, c=0.05):
     v = np.zeros(N)
     v[start_node] = 1.0
 
-    k = 20
+    k = 50
     while k > 0:
         updated_v = np.zeros(N)
         for j in xrange(N):
@@ -167,39 +201,10 @@ def randomWalkWithRestart(N, start_node, W, transfer_to, c=0.05):
 
         if l2_dis < 1e-4:
             break
+    v[start_node] = 1.0
     return v
 
-
-def randomWalkWithRestartSparse(N, start_node, W, transfer_to, c=0.05):
-    v = {start_node: 1.0}
-
-    k = 20
-    while k > 0:
-        updated_v = {}
-        if c > 0:
-            updated_v[start_node] = c
-        for j in v.keys():
-            for i in transfer_to[j]:
-                assert W[i][j] > 0 and W[i][j] <= 1
-                updated_v[i] = updated_v.get(i, 0) + W[i][j] * v[j] * (1-c)
-
-        key_set = set()
-        for k in v.keys() + updated_v.keys():
-            key_set.add(k)
-        l2_dis = 0
-        for key in key_set:
-            l2_dis += (v.get(key, 0) - updated_v.get(key, 0))**2
-        l2_dis = math.sqrt(l2_dis)
-        tot = sum([v for k, v in updated_v.items()])
-        v = copy.deepcopy(updated_v)
-        assert math.fabs(tot - c) < 1e-6 or math.fabs(tot - 1) < 1e-6
-        k -= 1
-
-        if l2_dis < 1e-4:
-            break
-    return v
-
-def preprocess(level=3, n_step=2):
+def feature_transfer(level=3, n_step=2):
     # users never view any product more than once
     all_records = _loadData('data/trainingData.csv') + _loadData('data/testData.csv')
     product_index, reversed_product_index = _loadIndex(level)
@@ -241,17 +246,49 @@ def preprocess(level=3, n_step=2):
         for k in W[j].keys():
             W[j][k] /= normalization_factors[k]
 
-    # pprint(W)
-    # pool = ThreadPool(processes=30)
-
-    # st = getCurrentStampUTC()
+    am = []
     for start_node in xrange(N):
-        # print transfer_to[start_node]
         # pool.apply_async(offlineRandomWalk, [N, start_node, W, transfer_to])
-        offlineRandomWalk(N, start_node, W, transfer_to)
-        # print start_node
-    # pool.close()
-    # pool.join()
+        # offlineRandomWalk(N, start_node, W, transfer_to)
+        v = randomWalkWithRestart(N, start_node, W, transfer_to)
+        am.append(v)
+
+    print am
+
+    dm = affinityToDistance(N, am)
+
+    M = N / 5
+
+    # clusters, err = chooseBestClustering(N, dm, 10, 500)
+
+    c = Cluster(dm)
+    c.setCenter(0)
+
+    for i in xrange(1, N):
+        c.addMember(i)
+
+    clusters = plitCluster(N, dm, c, M)
+
+    print N, M, len(clusters)
+
+    tot_member = 0
+    for sub_c in clusters:
+        tot_member += len(sub_c.members)
+        print sub_c.members
+
+    print tot_member
+
+    # for c in clusters:
+    #     print 'original cluster:',
+    #     for m in c.members:
+    #         print m,
+    #     print
+    #     # if len(c.members) * 1.0 / N > 0.5:
+    #     #     sub_clusters = kmedoid_clustering_list(N, dm, 5, c.members)
+    #     if len(c.members) > M:
+    #         print 'after resplit: ',
+    #         for sc in resplitCluster(N, dm, c, M):
+    #             print sc.members
 
     # nx.draw(G)
     # plt.savefig("test.png")
@@ -274,4 +311,36 @@ def preprocess(level=3, n_step=2):
 if __name__ == '__main__':
     # analysis(1)
     # _connectedAnalysis()
-    preprocess(3)
+    # st = getCurrentStampUTC()
+    feature_transfer(2)
+    # print getCurrentStampUTC() - st
+
+
+# def randomWalkWithRestartSparse(N, start_node, W, transfer_to, c=0.05):
+#     v = {start_node: 1.0}
+#
+#     k = 20
+#     while k > 0:
+#         updated_v = {}
+#         if c > 0:
+#             updated_v[start_node] = c
+#         for j in v.keys():
+#             for i in transfer_to[j]:
+#                 assert W[i][j] > 0 and W[i][j] <= 1
+#                 updated_v[i] = updated_v.get(i, 0) + W[i][j] * v[j] * (1-c)
+#
+#         key_set = set()
+#         for k in v.keys() + updated_v.keys():
+#             key_set.add(k)
+#         l2_dis = 0
+#         for key in key_set:
+#             l2_dis += (v.get(key, 0) - updated_v.get(key, 0))**2
+#         l2_dis = math.sqrt(l2_dis)
+#         tot = sum([v for k, v in updated_v.items()])
+#         v = copy.deepcopy(updated_v)
+#         assert math.fabs(tot - c) < 1e-6 or math.fabs(tot - 1) < 1e-6
+#         k -= 1
+#
+#         if l2_dis < 1e-4:
+#             break
+#     return v

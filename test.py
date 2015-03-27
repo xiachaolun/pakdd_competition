@@ -50,5 +50,27 @@ from sklearn.neighbors import KNeighborsClassifier
 
 from multiprocessing.pool import ThreadPool
 
+def join(thread_pool):
+    for t in thread_pool:
+        t.join()
 
+def test(url, lock=None):
+    time.sleep(1)
+    lock[0] = random.randint(0, 3)
+    print url
 
+lock = [100]
+pool = ThreadPool(processes=2)
+for i in xrange(10):
+    pool.apply_async(test, [i, lock])
+
+print 'start waiting'
+pool.close()
+pool.join()
+
+print lock
+
+from sklearn.linear_model import LogisticRegression
+
+lr = LogisticRegression()
+print lr.wei
